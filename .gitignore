@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+# personal data files - keep out of the repo
+*.xlsx
+hours*.xml
+*-statistics.xml
+*.bak

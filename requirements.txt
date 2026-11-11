@@ -1,0 +1,5 @@
+# Hour Tracker itself only needs Python 3.9+ with Tkinter (included in the
+# python.org installers for Windows and macOS).
+#
+# Optional: needed only for File > Import from Excel
+openpyxl>=3.0
