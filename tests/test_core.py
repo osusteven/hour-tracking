@@ -70,7 +70,9 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(data.entries, {})
 
     def test_helpers(self):
-        self.assertEqual(week_start(D(2026, 11, 11)), D(2026, 11, 9))
+        self.assertEqual(week_start(D(2026, 11, 11)), D(2026, 11, 8))
+        self.assertEqual(week_start(D(2026, 11, 8)), D(2026, 11, 8))
+        self.assertEqual(week_start(D(2026, 11, 14)), D(2026, 11, 8))
         self.assertEqual(fmt_hours(8.0), "8")
         self.assertEqual(fmt_hours(1.25), "1.25")
         self.assertEqual(fmt_hours(1 / 3), "0.33")

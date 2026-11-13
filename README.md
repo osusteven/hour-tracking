@@ -4,8 +4,14 @@ A small desktop app for logging work hours per company and project. It replaces
 the `Hours.xlsx` spreadsheet but keeps its layout: a grid of projects × days
 where you type hours such as `8` or `8+2 drive`.
 
-* **Week** – the familiar grid. Projects are grouped by company with daily,
-  company and weekly totals. Click a day and type the hours.
+* **Week** – the familiar grid, Sunday to Saturday. Projects are grouped by
+  company with daily, company and weekly totals. Click a day and type the
+  hours. A day's total turns green at 8 hours or more.
+* **Colours** – mark hours green, yellow or red, e.g. green once you have
+  submitted them. Right-click a cell to colour it, or colour a whole day or
+  week at once. While typing in a cell: Ctrl+1 green, Ctrl+2 yellow,
+  Ctrl+3 red, Ctrl+0 clear. In the Log tab you can colour several selected
+  entries at once.
 * **Log** – every entry as a list (date, project, category, hours, note) with
   date range, project and text filters. Use it to add entries with longer notes.
 * **Projects** – company, project, status, budget hours, logged and remaining
@@ -26,7 +32,8 @@ can open in a text editor, a browser or Excel (*Data > Get Data > From XML*):
 | `hours-statistics.xml` | statistics, regenerated after every save |
 | `hours.xml.bak` | copy of the data file from before the first save of each session |
 
-The default location is `Documents\HourTracker\`. *File > New data file* and
+The default location is `D:\OneDrive - Motor Systems\Document_s\`. If that
+folder doesn't exist, it's `Documents\HourTracker\`. *File > New data file* and
 *File > Open data file* switch to another file, and the app remembers the last
 one. *File > Export entries to CSV* writes a list for Excel.
 
@@ -45,7 +52,8 @@ Example of `hours.xml`:
   </projects>
   <entries>
     <entry id="17" date="2026-05-04" project="3" hours="8" category="Work" />
-    <entry id="18" date="2026-05-04" project="3" hours="2" category="Drive" note="Drove to site" />
+    <entry id="18" date="2026-05-04" project="3" hours="2" category="Drive" note="Drove to site"
+           mark="green" />
   </entries>
 </hourTracker>
 ```

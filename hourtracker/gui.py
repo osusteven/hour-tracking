@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
@@ -16,7 +17,7 @@ from . import __version__, storage
 from .cellparse import format_cell, parse_cell
 from .dialogs import (CategoriesDialog, CellDialog, EntryDialog, ImportSheetsDialog, ProjectDialog, TextDialog,
                       parse_date)
-from .model import TimeData, fmt_hours, week_start
+from .model import MARK_LABELS, MARKS, WEEKDAY_ORDER, TimeData, combined_mark, fmt_hours, week_start
 from .stats import Bucket, compute
 
 SHORTHAND_HELP = """Week grid shorthand
@@ -70,17 +71,34 @@ def make_tree(parent, columns, headings, widths, anchors=None, height=20, show="
 
 
 # ====================================================================== Week tab
+GRID_LINE = "#c8c8c8"
+CELL_BG = "#ffffff"
+WEEKEND_BG = "#f3f3f3"
+TODAY_HEAD_BG = "#cfe3ff"
+HEAD_BG = "#e4e4e4"
+COMPANY_BG = "#e6eef7"
+TOTAL_BG = "#e4e4e4"
+FULL_DAY_BG = "#7fcf78"  # daily total of 8 h or more
+FULL_DAY_HOURS = 8.0
+MARK_COLORS = {"green": "#b9e4b0", "yellow": "#fff1a6", "red": "#f5b7b1"}
+
+
 class WeekTab(ttk.Frame):
-    DAY_COLS = [f"d{i}" for i in range(7)]
+    MIN_WIDTHS = [240, 85] + [95] * 7 + [70]
 
     def __init__(self, master, app: "App"):
         super().__init__(master, padding=6)
         self.app = app
-        self.monday = week_start(dt.date.today())
-        self.editor: Optional[ttk.Entry] = None
-        self.edit_pos = None
+        self.sunday = week_start(dt.date.today())
+        self.editor: Optional[tk.Entry] = None
+        self.edit_pos = None  # (project_id, day index)
         self._committing = False
         self.collapsed = set()
+        self.cells = {}
+        self.rows = []
+        self.font = tkfont.nametofont("TkDefaultFont")
+        self.bold = self.font.copy()
+        self.bold.configure(weight="bold")
 
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=(0, 6))
@@ -95,49 +113,58 @@ class WeekTab(ttk.Frame):
         ttk.Checkbutton(bar, text="Show archived projects", variable=self.show_all,
                         command=self.refresh).pack(side="right", padx=8)
 
-        cols = ["status"] + self.DAY_COLS + ["total"]
-        frame, self.tree = make_tree(self, cols, ["Status"] + [""] * 7 + ["Total"],
-                                     [90] + [92] * 7 + [70],
-                                     anchors={c: "center" for c in self.DAY_COLS + ["total"]}, show="tree headings")
-        self.tree.heading("#0", text="Company / Project")
-        self.tree.column("#0", width=300, minwidth=150, stretch=True)
-        frame.pack(fill="both", expand=True)
-        self.tree.tag_configure("company", background="#e6eef7", font=("TkDefaultFont", 9, "bold"))
-        self.tree.tag_configure("total", background="#d9e7d5", font=("TkDefaultFont", 9, "bold"))
-        self.tree.tag_configure("archived", foreground="gray")
+        # fixed header + scrolling body, both with the same column widths
+        self.header = tk.Frame(self, bg=GRID_LINE, bd=0)
+        self.header.pack(fill="x", anchor="w")
+        body = ttk.Frame(self)
+        body.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(body, highlightthickness=0, bg=CELL_BG, bd=0)
+        vs = ttk.Scrollbar(body, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vs.set)
+        vs.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = tk.Frame(self.canvas, bg=GRID_LINE, bd=0)
+        self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._on_wheel))
+        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(3, "units"))
+        self.canvas.bind("<Configure>", lambda e: self.commit_edit())
 
-        ttk.Label(self, foreground="gray", text=(
-            "Click a day to type hours (e.g. 8  or  8+2 drive  or  1 TS).  "
-            "Right-click / double-click a cell for entries & notes.  Help > Grid shorthand for more.")
-        ).pack(anchor="w", pady=(4, 0))
+        legend = ttk.Frame(self)
+        legend.pack(fill="x", pady=(4, 0))
+        for color, text in [(MARK_COLORS["green"], "Green = submitted"), (MARK_COLORS["yellow"], "Yellow"),
+                            (MARK_COLORS["red"], "Red"), (FULL_DAY_BG, f"Day total ≥ {FULL_DAY_HOURS:g} h")]:
+            tk.Label(legend, bg=color, width=2, relief="solid", bd=1).pack(side="left", padx=(0, 4))
+            ttk.Label(legend, text=text).pack(side="left", padx=(0, 14))
+        ttk.Label(legend, foreground="gray", text=(
+            "Click a day to type hours (8, 8+2 drive, 1 TS).  Right-click to colour / add notes.  "
+            "While typing: Ctrl+1 green, Ctrl+2 yellow, Ctrl+3 red, Ctrl+0 clear.")).pack(side="left")
 
-        self.tree.bind("<Button-1>", self.on_click)
-        self.tree.bind("<Double-1>", self.on_double)
-        self.tree.bind("<Button-3>", self.on_right_click)
-        self.tree.bind("<Button-2>", self.on_right_click)  # macOS
-        self.tree.bind("<<TreeviewOpen>>", lambda e: self.collapsed.discard(self.tree.focus()))
-        self.tree.bind("<<TreeviewClose>>", lambda e: self.collapsed.add(self.tree.focus()))
-        self.tree.bind("<Configure>", lambda e: self.commit_edit())
-        self.tree.bind("<MouseWheel>", lambda e: self.commit_edit())
+    def _on_wheel(self, event):
+        self.commit_edit()
+        self.canvas.yview_scroll(int(-event.delta / 120) * 3 if event.delta else 0, "units")
 
     # ---- navigation
     def shift(self, days):
         self.commit_edit()
-        self.monday += dt.timedelta(days=days)
+        self.sunday += dt.timedelta(days=days)
         self.refresh()
 
     def go_today(self):
         self.commit_edit()
-        self.monday = week_start(dt.date.today())
+        self.sunday = week_start(dt.date.today())
         self.refresh()
 
     def goto_date(self):
         from tkinter import simpledialog
+        self.commit_edit()
         text = simpledialog.askstring("Go to date", "Date (YYYY-MM-DD or MM/DD/YYYY):", parent=self)
         if not text:
             return
         try:
-            self.monday = week_start(parse_date(text))
+            self.sunday = week_start(parse_date(text))
         except ValueError as exc:
             messagebox.showerror("Go to date", str(exc), parent=self)
             return
@@ -145,158 +172,235 @@ class WeekTab(ttk.Frame):
 
     @property
     def days(self):
-        return [self.monday + dt.timedelta(days=i) for i in range(7)]
+        return [self.sunday + dt.timedelta(days=i) for i in range(7)]
 
-    # ---- display
+    # ---- building the grid
+    def _label(self, parent, row, col, text, bg, anchor="center", bold=False, fg="black"):
+        lbl = tk.Label(parent, text=text, bg=bg, fg=fg, anchor=anchor, font=self.bold if bold else self.font,
+                       padx=6, pady=3, bd=0)
+        lbl.grid(row=row, column=col, sticky="nsew", padx=(0, 1), pady=(0, 1))
+        return lbl
+
     def refresh(self):
         self.cancel_edit()
         data = self.app.data
         days = self.days
         today = dt.date.today()
-        iso = self.monday.isocalendar()
-        self.title.config(text=f"Week {iso[1]}:  {days[0]:%b %d} – {days[6]:%b %d, %Y}")
-        for i, d in enumerate(days):
-            mark = " ●" if d == today else ""
-            self.tree.heading(self.DAY_COLS[i], text=f"{d:%a %m/%d}{mark}")
+        self.title.config(text=f"Week of {days[0]:%a %b %d} – {days[6]:%a %b %d, %Y}")
+        yview = self.canvas.yview()[0]
+
+        for w in self.header.winfo_children() + self.inner.winfo_children():
+            w.destroy()
+        self.cells = {}
+        self.rows = []
+        texts = [[] for _ in self.MIN_WIDTHS]  # for column widths
+
+        heads = ["Company / Project", "Status"] + [f"{d:%a %m/%d}" for d in days] + ["Total"]
+        for c, text in enumerate(heads):
+            bg = HEAD_BG
+            if 2 <= c <= 8:
+                d = days[c - 2]
+                bg = TODAY_HEAD_BG if d == today else HEAD_BG
+            lbl = self._label(self.header, 0, c, text, bg, anchor="w" if c == 0 else "center", bold=True)
+            texts[c].append(text)
+            if 2 <= c <= 8:
+                idx = c - 2
+                for seq in ("<Button-3>", "<Button-2>"):
+                    lbl.bind(seq, lambda e, i=idx: self.day_menu(e, i))
 
         week_entries = data.entries_between(days[0], days[6])
         used = {e.project_id for e in week_entries}
         projects = [p for p in data.sorted_projects() if self.show_all.get() or not p.archived or p.id in used]
-
         cells = {}
         for e in week_entries:
             cells.setdefault((e.project_id, e.date), []).append(e)
-
-        sel = self.tree.selection()
-        yview = self.tree.yview()[0]
-        self.tree.delete(*self.tree.get_children())
         groups = {}
         for p in projects:
             groups.setdefault(p.company or "(no company)", []).append(p)
+
         cats = data.categories
         grand = [0.0] * 7
+        row = 0
         for company, plist in groups.items():
-            cid = f"c:{company}"
             sub = [0.0] * 7
-            self.tree.insert("", "end", iid=cid, text=company, open=cid not in self.collapsed, tags=("company",))
             for p in plist:
-                vals = [p.status]
+                for i, d in enumerate(days):
+                    sub[i] += sum(e.hours for e in cells.get((p.id, d), []))
+            for i in range(7):
+                grand[i] += sub[i]
+            closed = company in self.collapsed
+            vals = [("▸ " if closed else "▾ ") + company, ""] + [fmt_hours(h) if h else "" for h in sub] + \
+                   [fmt_hours(sum(sub)) if sum(sub) else ""]
+            for c, text in enumerate(vals):
+                lbl = self._label(self.inner, row, c, text, COMPANY_BG, anchor="w" if c == 0 else "center",
+                                  bold=True)
+                texts[c].append(text)
+                lbl.bind("<Button-1>", lambda e, co=company: self.toggle_company(co))
+            row += 1
+            if closed:
+                continue
+            for p in plist:
+                self.rows.append(p.id)
+                fg = "gray" if p.archived else "black"
+                name = self._label(self.inner, row, 0, "      " + p.name, CELL_BG, anchor="w", fg=fg)
+                status = self._label(self.inner, row, 1, p.status, CELL_BG, fg=fg)
+                texts[0].append("      " + p.name)
+                texts[1].append(p.status)
+                for w in (name, status):
+                    w.bind("<Double-1>", lambda e, pid=p.id: self.edit_project(pid))
+                    for seq in ("<Button-3>", "<Button-2>"):
+                        w.bind(seq, lambda e, pid=p.id: self.cell_menu(e, pid, None))
                 total = 0.0
                 for i, d in enumerate(days):
                     es = cells.get((p.id, d), [])
-                    h = sum(e.hours for e in es)
-                    total += h
-                    sub[i] += h
-                    txt = format_cell(es, cats)
-                    if any(e.note for e in es):
-                        txt += " •"
-                    vals.append(txt)
-                vals.append(fmt_hours(total) if total else "")
-                self.tree.insert(cid, "end", iid=f"p:{p.id}", text=p.name, values=vals,
-                                 tags=("archived",) if p.archived else ())
-            for i in range(7):
-                grand[i] += sub[i]
-            self.tree.item(cid, values=[""] + [fmt_hours(h) if h else "" for h in sub] +
-                           [fmt_hours(sum(sub)) if sum(sub) else ""])
-        self.tree.insert("", "end", iid="total", text="TOTAL", tags=("total",),
-                         values=[""] + [fmt_hours(h) for h in grand] + [fmt_hours(sum(grand))])
-        if sel and self.tree.exists(sel[0]):
-            self.tree.selection_set(sel[0])
-        self.tree.yview_moveto(yview)
+                    total += sum(e.hours for e in es)
+                    text = format_cell(es, cats) + (" •" if any(e.note for e in es) else "")
+                    mark = combined_mark(es)
+                    bg = MARK_COLORS.get(mark) or (WEEKEND_BG if d.weekday() >= 5 else CELL_BG)
+                    lbl = self._label(self.inner, row, 2 + i, text, bg, fg=fg)
+                    texts[2 + i].append(text)
+                    self.cells[(p.id, i)] = lbl
+                    lbl.bind("<Button-1>", lambda e, pid=p.id, idx=i: self.on_click(pid, idx))
+                    lbl.bind("<Double-1>", lambda e, pid=p.id, idx=i: self.open_cell_dialog(pid, idx))
+                    for seq in ("<Button-3>", "<Button-2>"):
+                        lbl.bind(seq, lambda e, pid=p.id, idx=i: self.cell_menu(e, pid, idx))
+                text = fmt_hours(total) if total else ""
+                self._label(self.inner, row, 9, text, CELL_BG, bold=True, fg=fg)
+                texts[9].append(text)
+                row += 1
 
-    # ---- helpers
-    def _cell_at(self, event):
-        if self.tree.identify_region(event.x, event.y) != "cell":
-            return None, None
-        item = self.tree.identify_row(event.y)
-        col = self.tree.identify_column(event.x)  # '#0', '#1', ...
-        idx = int(col[1:]) - 2  # #1 is status, #2.. are days
-        if not item.startswith("p:") or not 0 <= idx < 7:
-            return item, None
-        return item, idx
+        vals = ["TOTAL", ""] + [fmt_hours(h) for h in grand] + [fmt_hours(sum(grand))]
+        for c, text in enumerate(vals):
+            bg = TOTAL_BG
+            if 2 <= c <= 8 and grand[c - 2] >= FULL_DAY_HOURS:
+                bg = FULL_DAY_BG
+            lbl = self._label(self.inner, row, c, text, bg, anchor="w" if c == 0 else "center", bold=True)
+            texts[c].append(text)
+            if 2 <= c <= 8:
+                for seq in ("<Button-3>", "<Button-2>"):
+                    lbl.bind(seq, lambda e, i=c - 2: self.day_menu(e, i))
 
-    def _project(self, item):
-        return self.app.data.projects.get(int(item[2:]))
+        for c, minw in enumerate(self.MIN_WIDTHS):
+            w = max([minw] + [self.bold.measure(t) + 16 for t in texts[c]])
+            self.header.columnconfigure(c, minsize=w)
+            self.inner.columnconfigure(c, minsize=w)
+        self.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.yview_moveto(yview)
+
+    def toggle_company(self, company):
+        if not self.commit_edit():
+            return
+        if company in self.collapsed:
+            self.collapsed.discard(company)
+        else:
+            self.collapsed.add(company)
+        self.refresh()
+
+    def _see(self, widget):
+        self.update_idletasks()
+        total = max(1, self.inner.winfo_height())
+        top = self.canvas.canvasy(0)
+        height = self.canvas.winfo_height()
+        y, h = widget.winfo_y(), widget.winfo_height()
+        if y < top:
+            self.canvas.yview_moveto(y / total)
+        elif y + h > top + height:
+            self.canvas.yview_moveto((y + h - height) / total)
 
     # ---- mouse
-    def on_click(self, event):
-        item, idx = self._cell_at(event)
+    def on_click(self, pid, idx):
         if self.editor is not None:
-            if self.edit_pos == (item, idx):
+            if self.edit_pos == (pid, idx):
                 return "break"
             if not self.commit_edit():
                 return "break"
-        if item and idx is not None:
-            self.tree.selection_set(item)
-            self.after_idle(lambda: self.start_edit(item, idx))
+        self.after_idle(lambda: self.start_edit(pid, idx))
+        return "break"
 
-    def on_double(self, event):
-        item, idx = self._cell_at(event)
-        if item and item.startswith("p:") and idx is None:
-            self.edit_project(item)
-            return "break"
-        if item and idx is not None:
-            self.cancel_edit()
-            self.open_cell_dialog(item, idx)
-            return "break"
-
-    def on_right_click(self, event):
-        self.commit_edit()
-        item, idx = self._cell_at(event)
-        if not item:
-            item = self.tree.identify_row(event.y)
-        if not item or not item.startswith("p:"):
+    def cell_menu(self, event, pid, idx):
+        if not self.commit_edit():
             return
-        self.tree.selection_set(item)
+        p = self.app.data.projects.get(pid)
+        if not p:
+            return
         menu = tk.Menu(self, tearoff=False)
         if idx is not None:
             d = self.days[idx]
-            menu.add_command(label=f"Entries && notes for {d:%a %m/%d}…",
-                             command=lambda: self.open_cell_dialog(item, idx))
-            menu.add_command(label="Clear this day", command=lambda: self.clear_cell(item, idx))
+            has = bool(self.app.data.entries_for(pid, d))
+            state = "normal" if has else "disabled"
+            for m in MARKS + [""]:
+                menu.add_command(label=MARK_LABELS[m], state=state,
+                                 command=lambda m=m: self.mark_entries(self.app.data.entries_for(pid, d), m))
             menu.add_separator()
-        menu.add_command(label="Edit project…", command=lambda: self.edit_project(item))
-        p = self._project(item)
-        if p:
-            menu.add_command(label="Restore project" if p.archived else "Archive project (hide)",
-                             command=lambda: self.toggle_archive(p))
+            menu.add_command(label=f"Entries && notes for {d:%a %m/%d}…",
+                             command=lambda: self.open_cell_dialog(pid, idx))
+            menu.add_command(label="Clear this day", state=state, command=lambda: self.clear_cell(pid, idx))
+            menu.add_separator()
+            self._add_bulk_menus(menu, idx)
+            menu.add_separator()
+        menu.add_command(label="Edit project…", command=lambda: self.edit_project(pid))
+        menu.add_command(label="Restore project" if p.archived else "Archive project (hide)",
+                         command=lambda: self.toggle_archive(p))
         menu.tk_popup(event.x_root, event.y_root)
 
+    def day_menu(self, event, idx):
+        if not self.commit_edit():
+            return
+        menu = tk.Menu(self, tearoff=False)
+        self._add_bulk_menus(menu, idx)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _add_bulk_menus(self, menu, idx):
+        d = self.days[idx]
+        day_menu = tk.Menu(menu, tearoff=False)
+        week_menu = tk.Menu(menu, tearoff=False)
+        for m in MARKS + [""]:
+            day_menu.add_command(label=MARK_LABELS[m],
+                                 command=lambda m=m: self.mark_entries(self.app.data.entries_between(d, d), m))
+            week_menu.add_command(label=MARK_LABELS[m], command=lambda m=m: self.mark_entries(
+                self.app.data.entries_between(self.days[0], self.days[6]), m))
+        menu.add_cascade(label=f"Colour all of {d:%a %m/%d}", menu=day_menu)
+        menu.add_cascade(label="Colour the whole week", menu=week_menu)
+
+    def mark_entries(self, entries, mark):
+        if not entries:
+            return
+        for e in entries:
+            e.mark = mark
+        self.app.changed()
+
     # ---- inline editing
-    def start_edit(self, item, idx):
+    def start_edit(self, pid, idx):
         self.cancel_edit()
-        if not self.tree.exists(item):
+        lbl = self.cells.get((pid, idx))
+        if lbl is None or not lbl.winfo_exists():
             return
-        self.tree.see(item)
-        self.update_idletasks()
-        col = self.DAY_COLS[idx]
-        bbox = self.tree.bbox(item, col)
-        if not bbox:
-            return
-        x, y, w, h = bbox
-        p = self._project(item)
-        es = self.app.data.entries_for(p.id, self.days[idx])
-        self.editor = ttk.Entry(self.tree, justify="center")
-        self.editor.insert(0, format_cell(es, self.app.data.categories))
-        self.editor.select_range(0, "end")
-        self.editor.place(x=x, y=y, width=max(w, 110), height=h)
-        self.editor.focus_set()
-        self.edit_pos = (item, idx)
-        self.editor.bind("<Return>", lambda e: self._commit_and_move(1, 0))
-        self.editor.bind("<KP_Enter>", lambda e: self._commit_and_move(1, 0))
-        self.editor.bind("<Down>", lambda e: self._commit_and_move(1, 0))
-        self.editor.bind("<Up>", lambda e: self._commit_and_move(-1, 0))
-        self.editor.bind("<Tab>", lambda e: self._commit_and_move(0, 1))
-        self.editor.bind("<Shift-Tab>", lambda e: self._commit_and_move(0, -1))
-        self.editor.bind("<ISO_Left_Tab>", lambda e: self._commit_and_move(0, -1))
-        self.editor.bind("<Escape>", lambda e: self.cancel_edit())
-        self.editor.bind("<FocusOut>", lambda e: self.after_idle(self.commit_edit))
+        self._see(lbl)
+        es = self.app.data.entries_for(pid, self.days[idx])
+        ed = tk.Entry(self.inner, justify="center", relief="solid", bd=1, font=self.font)
+        ed.insert(0, format_cell(es, self.app.data.categories))
+        ed.select_range(0, "end")
+        ed.place(in_=lbl, x=0, y=0, relwidth=1, relheight=1)
+        ed.focus_set()
+        self.editor = ed
+        self.edit_pos = (pid, idx)
+        for seq, move in [("<Return>", (1, 0)), ("<KP_Enter>", (1, 0)), ("<Down>", (1, 0)), ("<Up>", (-1, 0)),
+                          ("<Tab>", (0, 1)), ("<Shift-Tab>", (0, -1)), ("<ISO_Left_Tab>", (0, -1))]:
+            ed.bind(seq, lambda e, mv=move: self._commit_and_move(*mv))
+        for key, m in [("1", "green"), ("2", "yellow"), ("3", "red"), ("0", "")]:
+            ed.bind(f"<Control-Key-{key}>", lambda e, m=m: self._mark_from_editor(m))
+        ed.bind("<Escape>", lambda e: self.cancel_edit())
+        ed.bind("<FocusOut>", lambda e: self.after_idle(self.commit_edit))
 
     def cancel_edit(self):
         if self.editor is not None:
             ed, self.editor = self.editor, None
-            ed.destroy()
             self.edit_pos = None
+            try:
+                ed.destroy()
+            except tk.TclError:
+                pass
 
     def commit_edit(self) -> bool:
         """Save the open editor. Returns False if the text was not understood."""
@@ -309,10 +413,9 @@ class WeekTab(ttk.Frame):
             self._committing = False
 
     def _commit_edit(self) -> bool:
-        item, idx = self.edit_pos
+        pid, idx = self.edit_pos
         text = self.editor.get()
         data = self.app.data
-        p = self._project(item)
         res = parse_cell(text, data.categories)
         if text.strip() and not res.amounts:
             messagebox.showerror("Hours", f"Can't read '{text}'.\n\n" + SHORTHAND_HELP.split("\n\n")[1],
@@ -320,49 +423,57 @@ class WeekTab(ttk.Frame):
             if self.editor is not None:
                 self.editor.focus_set()
             return False
-        old = format_cell(data.entries_for(p.id, self.days[idx]), data.categories)
+        old = format_cell(data.entries_for(pid, self.days[idx]), data.categories)
         self.cancel_edit()
-        new_amounts = [(c, h) for c, h in res.amounts if h]
         if text.strip() == old and not res.unknown:
             return True
-        data.set_cell(p.id, self.days[idx], new_amounts, extra_note=res.note)
+        data.set_cell(pid, self.days[idx], [(c, h) for c, h in res.amounts if h], extra_note=res.note)
         self.app.changed()
         return True
 
     def _commit_and_move(self, drow, dcol):
         if self.editor is None:
             return "break"
-        item, idx = self.edit_pos
+        pid, idx = self.edit_pos
         if not self.commit_edit():
             return "break"
-        rows = [c for cid in self.tree.get_children("") for c in self.tree.get_children(cid)
-                if self.tree.item(cid, "open")]
-        if item not in rows:
+        if pid not in self.rows:
             return "break"
-        r = rows.index(item) + drow
+        r = self.rows.index(pid) + drow
         idx += dcol
         if idx > 6:
             idx, r = 0, r + 1
         if idx < 0:
             idx, r = 6, r - 1
-        if 0 <= r < len(rows):
-            self.tree.selection_set(rows[r])
-            self.start_edit(rows[r], idx)
+        if 0 <= r < len(self.rows):
+            self.start_edit(self.rows[r], idx)
+        return "break"
+
+    def _mark_from_editor(self, mark):
+        if self.editor is None:
+            return "break"
+        pid, idx = self.edit_pos
+        if not self.commit_edit():
+            return "break"
+        self.mark_entries(self.app.data.entries_for(pid, self.days[idx]), mark)
+        self.start_edit(pid, idx)
         return "break"
 
     # ---- actions
-    def open_cell_dialog(self, item, idx):
-        p = self._project(item)
+    def open_cell_dialog(self, pid, idx):
+        self.cancel_edit()
+        p = self.app.data.projects.get(pid)
         if p and CellDialog(self, self.app.data, p, self.days[idx]).run():
             self.app.changed()
+        return "break"
 
-    def clear_cell(self, item, idx):
-        p = self._project(item)
-        self.app.data.set_cell(p.id, self.days[idx], [])
+    def clear_cell(self, pid, idx):
+        self.app.data.set_cell(pid, self.days[idx], [])
         self.app.changed()
 
-    def edit_project(self, item):
-        p = self._project(item)
+    def edit_project(self, pid):
+        self.cancel_edit()
+        p = self.app.data.projects.get(pid)
         if p and ProjectDialog(self, self.app.data, p).run():
             self.app.changed()
 
@@ -371,14 +482,8 @@ class WeekTab(ttk.Frame):
         self.app.changed()
 
     def new_project(self):
-        sel = self.tree.selection()
-        company = ""
-        if sel:
-            if sel[0].startswith("c:"):
-                company = sel[0][2:]
-            elif sel[0].startswith("p:"):
-                company = self._project(sel[0]).company
-        if ProjectDialog(self, self.app.data, company=company).run():
+        self.commit_edit()
+        if ProjectDialog(self, self.app.data).run():
             self.app.changed()
 
 
@@ -416,14 +521,25 @@ class LogTab(ttk.Frame):
         ttk.Button(quick, text="Edit…", command=self.edit).pack(side="right", padx=4)
         ttk.Button(quick, text="New entry…", command=self.add).pack(side="right")
 
-        cols = ["date", "day", "company", "project", "category", "hours", "note"]
-        frame, self.tree = make_tree(self, cols, ["Date", "Day", "Company", "Project", "Category", "Hours", "Note"],
-                                     [90, 45, 110, 220, 100, 60, 380], anchors={"hours": "e", "day": "center"})
+        cols = ["date", "day", "company", "project", "category", "hours", "mark", "note"]
+        frame, self.tree = make_tree(self, cols, ["Date", "Day", "Company", "Project", "Category", "Hours", "Colour",
+                                                  "Note"],
+                                     [90, 45, 110, 220, 100, 60, 70, 360],
+                                     anchors={"hours": "e", "day": "center", "mark": "center"})
         frame.pack(fill="both", expand=True)
+        self.tree.configure(selectmode="extended")
+        for m in MARKS:
+            self.tree.tag_configure(m, background=MARK_COLORS[m])
         self.tree.bind("<Double-1>", lambda e: self.edit())
         self.tree.bind("<Delete>", lambda e: self.delete())
-        self.footer = ttk.Label(self, font=("TkDefaultFont", 10, "bold"))
-        self.footer.pack(anchor="e", pady=(4, 0))
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x", pady=(4, 0))
+        ttk.Label(bottom, text="Colour selected entries (Ctrl/Shift+click to pick several):").pack(side="left")
+        for m in MARKS + [""]:
+            ttk.Button(bottom, text=m.capitalize() if m else "Clear colour",
+                       command=lambda m=m: self.mark(m)).pack(side="left", padx=(4, 0))
+        self.footer = ttk.Label(bottom, font=("TkDefaultFont", 10, "bold"))
+        self.footer.pack(side="right")
         self.this_month(refresh=False)
 
     def _set_range(self, a: Optional[dt.date], b: Optional[dt.date], refresh=True):
@@ -487,15 +603,29 @@ class LogTab(ttk.Frame):
         total = 0.0
         for e, company, pname in rows:
             total += e.hours
-            self.tree.insert("", "end", iid=str(e.id), values=[
+            self.tree.insert("", "end", iid=str(e.id), tags=(e.mark,) if e.mark else (), values=[
                 e.date.isoformat(), e.date.strftime("%a"), company, pname, e.category, fmt_hours(e.hours),
-                e.note.replace("\n", " ")])
+                e.mark, e.note.replace("\n", " ")])
         days = len({r[0].date for r in rows})
         self.footer.config(text=f"{len(rows)} entries   •   {days} days   •   {fmt_hours(total)} hours")
 
     def _selected(self):
         sel = self.tree.selection()
         return self.app.data.entries.get(int(sel[0])) if sel else None
+
+    def mark(self, mark):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Colour", "Select one or more entries first (Ctrl/Shift+click).", parent=self)
+            return
+        for iid in sel:
+            e = self.app.data.entries.get(int(iid))
+            if e:
+                e.mark = mark
+        self.app.changed()
+        for iid in sel:
+            if self.tree.exists(iid):
+                self.tree.selection_add(iid)
 
     def add(self):
         if EntryDialog(self, self.app.data).run():
@@ -507,9 +637,14 @@ class LogTab(ttk.Frame):
             self.app.changed()
 
     def delete(self):
-        e = self._selected()
-        if e and messagebox.askyesno("Delete entry", f"Delete {fmt_hours(e.hours)} h on {e.date}?", parent=self):
-            self.app.data.delete_entry(e.id)
+        sel = [self.app.data.entries[int(i)] for i in self.tree.selection() if int(i) in self.app.data.entries]
+        if not sel:
+            return
+        msg = (f"Delete {fmt_hours(sel[0].hours)} h on {sel[0].date}?" if len(sel) == 1 else
+               f"Delete {len(sel)} entries ({fmt_hours(sum(e.hours for e in sel))} h)?")
+        if messagebox.askyesno("Delete", msg, parent=self):
+            for e in sel:
+                self.app.data.delete_entry(e.id)
             self.app.changed()
 
 
@@ -695,9 +830,8 @@ class StatsTab(ttk.Frame):
         self._table("months", ["Month", "Hours", "Days", "Avg/day"], [140, 70, 50, 70], cats, rows)
 
         rows = []
-        for monday, b in sorted(s.weeks.items(), reverse=True):
-            iso = monday.isocalendar()
-            rows.append([f"{iso[0]} wk {iso[1]:02d}  ({monday:%m/%d})", fmt_hours(b.hours), b.days,
+        for sunday, b in sorted(s.weeks.items(), reverse=True):
+            rows.append([f"{sunday:%m/%d/%Y} – {sunday + dt.timedelta(days=6):%m/%d}", fmt_hours(b.hours), b.days,
                          fmt_hours(b.avg_per_day)] + catvals(b))
         self._table("weeks", ["Week", "Hours", "Days", "Avg/day"], [170, 70, 50, 70], cats, rows)
 
@@ -716,7 +850,7 @@ class StatsTab(ttk.Frame):
         self._table("companies", ["Company", "Hours", "Days", "Avg/day"], [160, 70, 50, 70], cats, rows)
 
         rows = []
-        for i in range(7):
+        for i in WEEKDAY_ORDER:
             b = s.weekdays.get(i, Bucket())
             rows.append([calendar.day_name[i], fmt_hours(b.hours), b.days, fmt_hours(b.avg_per_day)] + catvals(b))
         self._table("weekdays", ["Weekday", "Hours", "Days", "Avg/day"], [120, 70, 50, 70], cats, rows)
@@ -737,6 +871,7 @@ class App(tk.Tk):
 
         self.cfg = storage.load_config()
         self.data_path = Path(data_path or self.cfg.get("data_file") or storage.default_data_path())
+        self._migrate_old_default()
         self.backed_up = False
         self.data = self._load(self.data_path)
 
@@ -759,6 +894,19 @@ class App(tk.Tk):
         self._set_status("Loaded")
 
     # ---- data file
+    def _migrate_old_default(self):
+        """Move hours.xml from the first version's default folder to the new default folder."""
+        old = storage.old_default_data_path()
+        if self.data_path.exists() or not old.exists() or old == self.data_path:
+            return
+        try:
+            import shutil
+            self.data_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old, self.data_path)
+            old.rename(old.with_name(old.name + ".moved"))
+        except OSError:
+            pass
+
     def _load(self, path: Path) -> TimeData:
         if path.exists():
             try:

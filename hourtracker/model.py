@@ -7,6 +7,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 STATUSES = ["Not Started", "Active", "Waiting", "On Hold", "Done"]
 
+# Colour marks for entries, e.g. green = hours submitted.  "" = no mark.
+MARKS = ["green", "yellow", "red"]
+MARK_LABELS = {"green": "Green (submitted)", "yellow": "Yellow", "red": "Red", "": "No colour"}
+
 # Extra free-text project fields (attribute name, label) - mirrors the
 # columns of the original spreadsheet.
 PROJECT_TEXT_FIELDS: List[Tuple[str, str]] = [
@@ -76,6 +80,7 @@ class Entry:
     category: str = "Work"
     note: str = ""
     source: str = ""  # e.g. "excel:2026!M14" for imported entries
+    mark: str = ""  # "", "green", "yellow" or "red"
 
 
 @dataclass
@@ -143,9 +148,9 @@ class TimeData:
 
     # ------------------------------------------------------------------ entries
     def add_entry(self, date: dt.date, project_id: int, hours: float, category: Optional[str] = None,
-                  note: str = "", source: str = "") -> Entry:
+                  note: str = "", source: str = "", mark: str = "") -> Entry:
         e = Entry(id=self.next_entry_id, date=date, project_id=project_id, hours=float(hours),
-                  category=category or self.default_category, note=note, source=source)
+                  category=category or self.default_category, note=note, source=source, mark=mark)
         self.entries[e.id] = e
         self.next_entry_id += 1
         return e
@@ -174,6 +179,7 @@ class TimeData:
         for cat, hours in amounts:
             totals[cat] = totals.get(cat, 0.0) + hours
         existing = self.entries_for(project_id, date)
+        cell_mark = combined_mark(existing)
         by_cat: Dict[str, List[Entry]] = {}
         for e in existing:
             by_cat.setdefault(e.category, []).append(e)
@@ -187,7 +193,7 @@ class TimeData:
                 for o in olds[1:]:
                     self.delete_entry(o.id)
             else:
-                keep = self.add_entry(date, project_id, hours, cat)
+                keep = self.add_entry(date, project_id, hours, cat, mark=cell_mark)
             if extra_note:
                 keep.note = f"{keep.note}; {extra_note}" if keep.note else extra_note
                 extra_note = ""
@@ -197,8 +203,24 @@ class TimeData:
 
 
 def week_start(d: dt.date) -> dt.date:
-    """Monday of the week containing ``d``."""
-    return d - dt.timedelta(days=d.weekday())
+    """Sunday that starts the week containing ``d`` (weeks run Sunday-Saturday)."""
+    return d - dt.timedelta(days=(d.weekday() + 1) % 7)
+
+
+# weekday() numbers (0 = Monday) in display order, starting on Sunday
+WEEKDAY_ORDER = [6, 0, 1, 2, 3, 4, 5]
+
+
+def combined_mark(entries) -> str:
+    """The colour of a cell holding several entries: red or yellow if any entry
+    has it, green only if every entry is green, otherwise no colour."""
+    marks = {e.mark for e in entries}
+    if not marks:
+        return ""
+    for m in ("red", "yellow"):
+        if m in marks:
+            return m
+    return "green" if marks == {"green"} else ""
 
 
 def fmt_hours(h: float) -> str:

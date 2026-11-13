@@ -8,7 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .model import TimeData, fmt_hours, week_start
+from .model import MARKS, WEEKDAY_ORDER, TimeData, fmt_hours, week_start
 
 
 @dataclass
@@ -50,10 +50,11 @@ class Stats:
     total: Bucket
     years: Dict[int, Bucket]
     months: Dict[tuple, Bucket]  # (year, month)
-    weeks: Dict[dt.date, Bucket]  # monday
+    weeks: Dict[dt.date, Bucket]  # sunday that starts the week
     companies: Dict[str, Bucket]
     projects: Dict[int, Bucket]
     weekdays: Dict[int, Bucket]  # 0 = Monday
+    marks: Dict[str, Bucket]  # "" = not coloured
     summary: Dict[str, float]
 
 
@@ -70,6 +71,7 @@ def compute(data: TimeData, year: Optional[int] = None, today: Optional[dt.date]
     companies: Dict[str, Bucket] = defaultdict(Bucket)
     projects: Dict[int, Bucket] = defaultdict(Bucket)
     weekdays: Dict[int, Bucket] = defaultdict(Bucket)
+    marks: Dict[str, Bucket] = defaultdict(Bucket)
 
     for e in data.entries.values():
         if year is not None and e.date.year != year:
@@ -82,6 +84,7 @@ def compute(data: TimeData, year: Optional[int] = None, today: Optional[dt.date]
         companies[p.company if p else "?"].add(e)
         projects[e.project_id].add(e)
         weekdays[e.date.weekday()].add(e)
+        marks[e.mark].add(e)
 
     def hours_between(a: dt.date, b: dt.date) -> float:
         return sum(e.hours for e in data.entries.values() if a <= e.date <= b)
@@ -108,6 +111,7 @@ def compute(data: TimeData, year: Optional[int] = None, today: Optional[dt.date]
         companies=dict(companies),
         projects=dict(projects),
         weekdays=dict(weekdays),
+        marks=dict(marks),
         summary=summary,
     )
 
@@ -161,11 +165,10 @@ def stats_xml(data: TimeData, today: Optional[dt.date] = None) -> ET.Element:
             _add_categories(m_el, mb, cats)
 
     weeks_el = ET.SubElement(root, "weeks")
-    for monday in sorted(s.weeks):
-        wb = s.weeks[monday]
-        iso = monday.isocalendar()
-        w_el = ET.SubElement(weeks_el, "week", start=monday.isoformat(), isoYear=str(iso[0]),
-                             isoWeek=str(iso[1]), **_bucket_attrs(wb))
+    for sunday in sorted(s.weeks):
+        wb = s.weeks[sunday]
+        w_el = ET.SubElement(weeks_el, "week", start=sunday.isoformat(),
+                             end=(sunday + dt.timedelta(days=6)).isoformat(), **_bucket_attrs(wb))
         _add_categories(w_el, wb, cats)
 
     comp_el = ET.SubElement(root, "companies")
@@ -189,8 +192,13 @@ def stats_xml(data: TimeData, today: Optional[dt.date] = None) -> ET.Element:
                           hours=_h(sum(e.hours for e in data.entries.values()
                                        if e.project_id == p.id and e.date.year == y)))
 
+    marks_el = ET.SubElement(root, "byMark")
+    for m in MARKS + [""]:
+        b = s.marks.get(m, Bucket())
+        ET.SubElement(marks_el, "mark", value=m or "none", hours=_h(b.hours), entries=str(b.entries))
+
     wd_el = ET.SubElement(root, "weekdays")
-    for i in range(7):
+    for i in WEEKDAY_ORDER:
         b = s.weekdays.get(i, Bucket())
         ET.SubElement(wd_el, "weekday", name=calendar.day_name[i], **_bucket_attrs(b))
     return root

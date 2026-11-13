@@ -47,9 +47,24 @@ def config_dir() -> Path:
     return base / "HourTracker"
 
 
-def default_data_path() -> Path:
+# Preferred folders for the data file, first existing one wins.
+PREFERRED_DATA_DIRS = [
+    Path(r"D:\OneDrive - Motor Systems\Document_s"),
+    Path(r"D:\OneDrive - Motor Systems\Documents"),
+]
+
+
+def old_default_data_path() -> Path:
     docs = Path.home() / "Documents"
     return (docs if docs.is_dir() else Path.home()) / "HourTracker" / "hours.xml"
+
+
+def default_data_path() -> Path:
+    if sys.platform.startswith("win"):
+        for d in PREFERRED_DATA_DIRS:
+            if d.is_dir():
+                return d / "hours.xml"
+    return old_default_data_path()
 
 
 def stats_path_for(data_path: Path) -> Path:
@@ -119,6 +134,7 @@ def load(path: Path) -> TimeData:
             category=e.get("category") or data.default_category,
             note=e.get("note", ""),
             source=e.get("source", ""),
+            mark=e.get("mark", ""),
         )
         data.entries[entry.id] = entry
 
@@ -161,6 +177,8 @@ def to_xml(data: TimeData) -> ET.Element:
         }
         if e.note:
             attrs["note"] = e.note
+        if e.mark:
+            attrs["mark"] = e.mark
         if e.source:
             attrs["source"] = e.source
         ET.SubElement(entries, "entry", attrs)
