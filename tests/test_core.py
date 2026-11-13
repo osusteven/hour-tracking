@@ -167,3 +167,23 @@ class ColorAndReportTests(unittest.TestCase):
         self.assertIn("IAS - Sierra", text)
         lines = [ln for ln in text.splitlines() if ln.strip().startswith("This year")]
         self.assertEqual(lines[0].split()[3:5], ["14.0", "2"])
+
+
+class MigrationTests(unittest.TestCase):
+    def test_files_move_from_folder_root_into_subfolder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "hours.xml"
+            data = TimeData()
+            data.add_project("IAS", "X")
+            storage.save(data, old, backup=False)
+            storage.save(data, old, backup=True)  # creates hours.xml.bak
+            (root / "notes.xml").write_text("<other/>", encoding="utf-8")
+            target = root / "HourTracker" / "hours.xml"
+            self.assertEqual(storage.migrate_to(target, [root / "notes.xml", old]), old)
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ["HourTracker", "notes.xml"])
+            self.assertEqual(sorted(p.name for p in target.parent.iterdir()),
+                             ["hours-statistics.txt", "hours-statistics.xml", "hours.xml", "hours.xml.bak"])
+            self.assertEqual(len(storage.load(target).projects), 1)
+            # nothing happens once the target exists
+            self.assertIsNone(storage.migrate_to(target, [old]))

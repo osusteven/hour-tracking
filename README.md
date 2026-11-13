@@ -34,8 +34,9 @@ can open in a text editor, a browser or Excel (*Data > Get Data > From XML*):
 | `hours-statistics.xml` | the same statistics as XML, regenerated after every save |
 | `hours.xml.bak` | copy of the data file from before the first save of each session |
 
-The default location is `D:\OneDrive - Motor Systems\Document_s\`. If that
-folder doesn't exist, it's `Documents\HourTracker\`. *File > New data file* and
+The files go in their own folder, `D:\OneDrive - Motor Systems\Document_s\HourTracker\`.
+If `D:\OneDrive - Motor Systems\Document_s` doesn't exist, they go in
+`Documents\HourTracker\` instead. *File > New data file* and
 *File > Open data file* switch to another file, and the app remembers the last
 one. *File > Export entries to CSV* writes a list for Excel.
 

@@ -50,7 +50,9 @@ def config_dir() -> Path:
     return base / "HourTracker"
 
 
-# Preferred folders for the data file, first existing one wins.
+# Preferred parent folders for the data, first existing one wins.  The files
+# go into a "HourTracker" subfolder there, never loose in the folder itself.
+DATA_SUBFOLDER = "HourTracker"
 PREFERRED_DATA_DIRS = [
     Path(r"D:\OneDrive - Motor Systems\Document_s"),
     Path(r"D:\OneDrive - Motor Systems\Documents"),
@@ -59,15 +61,53 @@ PREFERRED_DATA_DIRS = [
 
 def old_default_data_path() -> Path:
     docs = Path.home() / "Documents"
-    return (docs if docs.is_dir() else Path.home()) / "HourTracker" / "hours.xml"
+    return (docs if docs.is_dir() else Path.home()) / DATA_SUBFOLDER / "hours.xml"
 
 
 def default_data_path() -> Path:
     if sys.platform.startswith("win"):
         for d in PREFERRED_DATA_DIRS:
             if d.is_dir():
-                return d / "hours.xml"
+                return d / DATA_SUBFOLDER / "hours.xml"
     return old_default_data_path()
+
+
+def companion_files(data_path: Path):
+    """The data file and every file the app writes next to it."""
+    data_path = Path(data_path)
+    return [data_path, data_path.with_name(data_path.name + ".bak"), stats_path_for(data_path),
+            stats_text_path_for(data_path)]
+
+
+def _is_data_file(path: Path) -> bool:
+    try:
+        return ET.parse(str(path)).getroot().tag == "hourTracker"
+    except (OSError, ET.ParseError):
+        return False
+
+
+def migrate_to(target: Path, candidates) -> Optional[Path]:
+    """Move the data file (and its statistics/backup files) from an earlier
+    location to ``target`` if ``target`` doesn't exist yet.  Returns the old
+    data file path when something was moved."""
+    target = Path(target)
+    if target.exists():
+        return None
+    for old in candidates:
+        old = Path(old)
+        if old == target or not old.is_file() or not _is_data_file(old):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for src, dst in zip(companion_files(old), companion_files(target)):
+            if src.exists() and not dst.exists():
+                shutil.move(str(src), str(dst))
+        return old
+    return None
+
+
+def earlier_default_paths():
+    """Where earlier versions of the app put the data file."""
+    return [d / "hours.xml" for d in PREFERRED_DATA_DIRS] + [old_default_data_path()]
 
 
 def stats_path_for(data_path: Path) -> Path:

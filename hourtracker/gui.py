@@ -901,17 +901,14 @@ class App(tk.Tk):
 
     # ---- data file
     def _migrate_old_default(self):
-        """Move hours.xml from the first version's default folder to the new default folder."""
-        old = storage.old_default_data_path()
-        if self.data_path.exists() or not old.exists() or old == self.data_path:
-            return
+        """Move the data files from where earlier versions put them into the HourTracker folder."""
+        if self.data_path != storage.default_data_path():
+            return  # the user picked a file themselves
         try:
-            import shutil
-            self.data_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(old, self.data_path)
-            old.rename(old.with_name(old.name + ".moved"))
-        except OSError:
-            pass
+            storage.migrate_to(self.data_path, storage.earlier_default_paths())
+        except OSError as exc:
+            messagebox.showwarning("Hour Tracker", f"Could not move the data files to\n{self.data_path.parent}:"
+                                                   f"\n{exc}")
 
     def _load(self, path: Path) -> TimeData:
         if path.exists():
