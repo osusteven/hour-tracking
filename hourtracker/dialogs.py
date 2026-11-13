@@ -227,10 +227,13 @@ class EntryDialog(Dialog):
         self.hours.pack(side="left")
         ttk.Label(hf, text="e.g. 2, 1.5, 1:30, 45m", foreground="gray").pack(side="left", padx=6)
 
-        ttk.Label(body, text="Colour").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=2)
-        self.mark = ttk.Combobox(body, values=MARK_CHOICES, state="readonly", width=10)
-        self.mark.set(e.mark if e else "")
-        self.mark.grid(row=4, column=1, sticky="w", pady=2)
+        ttk.Label(body, text="Color").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=2)
+        mf = ttk.Frame(body)
+        mf.grid(row=4, column=1, sticky="ew", pady=2)
+        self.mark = ttk.Combobox(mf, values=MARK_CHOICES, state="readonly", width=10)
+        self.mark.set(self.data.entry_mark(e) if e else "")
+        self.mark.pack(side="left")
+        ttk.Label(mf, text="(colors this project's whole day)", foreground="gray").pack(side="left", padx=6)
 
         ttk.Label(body, text="Note").grid(row=5, column=0, sticky="nw", padx=(0, 8), pady=2)
         self.note = tk.Text(body, width=50, height=5, wrap="word")
@@ -261,11 +264,11 @@ class EntryDialog(Dialog):
         category = self.category.get().strip() or self.data.default_category
         note = self.note.get("1.0", "end").strip()
         pid = self.projects[idx].id
-        mark = self.mark.get()
+        self.data.set_mark(pid, date, self.mark.get())
         if self.entry is None:
-            return self.data.add_entry(date, pid, hours, category, note, mark=mark)
+            return self.data.add_entry(date, pid, hours, category, note)
         e = self.entry
-        e.date, e.project_id, e.hours, e.category, e.note, e.mark = date, pid, hours, category, note, mark
+        e.date, e.project_id, e.hours, e.category, e.note = date, pid, hours, category, note
         return e
 
 
@@ -285,18 +288,24 @@ class CellDialog(Dialog):
                   font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(0, 8))
         self.grid_frame = ttk.Frame(body)
         self.grid_frame.pack(fill="both", expand=True)
-        for c, text in enumerate(["Category", "Hours", "Note", "Colour", ""]):
+        for c, text in enumerate(["Category", "Hours", "Note", ""]):
             ttk.Label(self.grid_frame, text=text, foreground="gray").grid(row=0, column=c, sticky="w")
         self.grid_frame.columnconfigure(2, weight=1)
         for e in self.data.entries_for(self.project.id, self.date):
-            self._add_row(e.category, fmt_hours(e.hours), e.note, e.mark)
+            self._add_row(e.category, fmt_hours(e.hours), e.note)
         if not self.rows:
             self._add_row(self.data.default_category, "", "")
         ttk.Button(body, text="+ Add line", command=lambda: self._add_row(self.data.default_category, "", "")).pack(
             anchor="w", pady=(6, 0))
+        mf = ttk.Frame(body)
+        mf.pack(anchor="w", pady=(10, 0))
+        ttk.Label(mf, text="Color").pack(side="left")
+        self.mark = ttk.Combobox(mf, values=MARK_CHOICES, state="readonly", width=10)
+        self.mark.set(self.data.get_mark(self.project.id, self.date))
+        self.mark.pack(side="left", padx=6)
         self.bind("<Return>", lambda ev: self._ok())
 
-    def _add_row(self, cat, hours, note, mark=""):
+    def _add_row(self, cat, hours, note):
         r = len(self.rows) + 1
         cb = ttk.Combobox(self.grid_frame, values=self.data.category_names(), width=14)
         cb.set(cat)
@@ -304,19 +313,17 @@ class CellDialog(Dialog):
         he.insert(0, hours)
         ne = ttk.Entry(self.grid_frame, width=50)
         ne.insert(0, note)
-        mk = ttk.Combobox(self.grid_frame, values=MARK_CHOICES, state="readonly", width=8)
-        mk.set(mark)
-        row = {"cat": cb, "hours": he, "note": ne, "mark": mk, "alive": True}
+        row = {"cat": cb, "hours": he, "note": ne, "alive": True}
         rm = ttk.Button(self.grid_frame, text="x", width=2, command=lambda: self._remove(row))
         row["rm"] = rm
-        for c, w in enumerate((cb, he, ne, mk, rm)):
+        for c, w in enumerate((cb, he, ne, rm)):
             w.grid(row=r, column=c, sticky="ew", padx=2, pady=2)
         self.rows.append(row)
         he.focus_set()
 
     def _remove(self, row):
         row["alive"] = False
-        for k in ("cat", "hours", "note", "mark", "rm"):
+        for k in ("cat", "hours", "note", "rm"):
             row[k].destroy()
 
     def validate(self):
@@ -331,11 +338,12 @@ class CellDialog(Dialog):
             if not htxt:
                 raise ValueError("Every line with a note needs hours.")
             new.append((row["cat"].get().strip() or self.data.default_category,
-                        parse_hours(htxt, self.data.categories), note, row["mark"].get()))
+                        parse_hours(htxt, self.data.categories), note))
         for e in self.data.entries_for(self.project.id, self.date):
             self.data.delete_entry(e.id)
-        for cat, h, note, mark in new:
-            self.data.add_entry(self.date, self.project.id, h, cat, note, mark=mark)
+        for cat, h, note in new:
+            self.data.add_entry(self.date, self.project.id, h, cat, note)
+        self.data.set_mark(self.project.id, self.date, self.mark.get())
         return True
 
 

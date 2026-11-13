@@ -17,6 +17,9 @@ Data file layout (hours.xml)::
         <entry id="17" date="2026-05-01" project="3" hours="1.5"
                category="Work" note="..." />
       </entries>
+      <cellColors>
+        <cell project="3" date="2026-05-01" color="green" />
+      </cellColors>
     </hourTracker>
 """
 from __future__ import annotations
@@ -71,6 +74,12 @@ def stats_path_for(data_path: Path) -> Path:
     """statistics file that sits next to the data file: hours.xml -> hours-statistics.xml"""
     data_path = Path(data_path)
     return data_path.with_name(f"{data_path.stem}-statistics.xml")
+
+
+def stats_text_path_for(data_path: Path) -> Path:
+    """plain text statistics report: hours.xml -> hours-statistics.txt"""
+    data_path = Path(data_path)
+    return data_path.with_name(f"{data_path.stem}-statistics.txt")
 
 
 def load_config() -> dict:
@@ -134,9 +143,14 @@ def load(path: Path) -> TimeData:
             category=e.get("category") or data.default_category,
             note=e.get("note", ""),
             source=e.get("source", ""),
-            mark=e.get("mark", ""),
         )
         data.entries[entry.id] = entry
+        if e.get("mark"):  # files from the version that colored entries
+            data.marks.setdefault((entry.project_id, entry.date), e.get("mark"))
+
+    for c in root.iterfind("cellColors/cell"):
+        if c.get("color"):
+            data.marks[(int(c.get("project")), dt.date.fromisoformat(c.get("date")))] = c.get("color")
 
     data.next_project_id = max(data.projects, default=0) + 1
     data.next_entry_id = max(data.entries, default=0) + 1
@@ -177,11 +191,14 @@ def to_xml(data: TimeData) -> ET.Element:
         }
         if e.note:
             attrs["note"] = e.note
-        if e.mark:
-            attrs["mark"] = e.mark
         if e.source:
             attrs["source"] = e.source
         ET.SubElement(entries, "entry", attrs)
+
+    colors = ET.SubElement(root, "cellColors")
+    for (pid, day), color in sorted(data.marks.items()):
+        if pid in data.projects:
+            ET.SubElement(colors, "cell", project=str(pid), date=day.isoformat(), color=color)
     return root
 
 
@@ -207,8 +224,26 @@ def write_xml(root: ET.Element, path: Path, backup: bool = False) -> None:
 
 
 def save(data: TimeData, path: Path, backup: bool = False) -> None:
-    """Save the data file and regenerate the statistics file next to it."""
-    from .stats import stats_xml  # local import to avoid a cycle
+    """Save the data file and regenerate the statistics files next to it."""
+    from .report import stats_text  # local imports to avoid a cycle
+    from .stats import stats_xml
 
     write_xml(to_xml(data), path, backup=backup)
     write_xml(stats_xml(data), stats_path_for(path))
+    write_text(stats_text(data, data_file=Path(path).name), stats_text_path_for(path))
+
+
+def write_text(text: str, path: Path) -> None:
+    path = Path(path)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".txt", dir=str(path.parent))
+    try:
+        # utf-8 with BOM so Notepad shows it right; CRLF line ends on Windows
+        with os.fdopen(fd, "w", encoding="utf-8-sig", newline=None) as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

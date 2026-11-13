@@ -17,7 +17,7 @@ from . import __version__, storage
 from .cellparse import format_cell, parse_cell
 from .dialogs import (CategoriesDialog, CellDialog, EntryDialog, ImportSheetsDialog, ProjectDialog, TextDialog,
                       parse_date)
-from .model import MARK_LABELS, MARKS, WEEKDAY_ORDER, TimeData, combined_mark, fmt_hours, week_start
+from .model import MARK_LABELS, MARKS, WEEKDAY_ORDER, TimeData, fmt_hours, week_start
 from .stats import Bucket, compute
 
 SHORTHAND_HELP = """Week grid shorthand
@@ -139,7 +139,7 @@ class WeekTab(ttk.Frame):
             tk.Label(legend, bg=color, width=2, relief="solid", bd=1).pack(side="left", padx=(0, 4))
             ttk.Label(legend, text=text).pack(side="left", padx=(0, 14))
         ttk.Label(legend, foreground="gray", text=(
-            "Click a day to type hours (8, 8+2 drive, 1 TS).  Right-click to colour / add notes.  "
+            "Click a day to type hours (8, 8+2 drive, 1 TS).  Right-click to color / add notes.  "
             "While typing: Ctrl+1 green, Ctrl+2 yellow, Ctrl+3 red, Ctrl+0 clear.")).pack(side="left")
 
     def _on_wheel(self, event):
@@ -255,7 +255,7 @@ class WeekTab(ttk.Frame):
                     es = cells.get((p.id, d), [])
                     total += sum(e.hours for e in es)
                     text = format_cell(es, cats) + (" •" if any(e.note for e in es) else "")
-                    mark = combined_mark(es)
+                    mark = data.get_mark(p.id, d)
                     bg = MARK_COLORS.get(mark) or (WEEKEND_BG if d.weekday() >= 5 else CELL_BG)
                     lbl = self._label(self.inner, row, 2 + i, text, bg, fg=fg)
                     texts[2 + i].append(text)
@@ -330,8 +330,7 @@ class WeekTab(ttk.Frame):
             has = bool(self.app.data.entries_for(pid, d))
             state = "normal" if has else "disabled"
             for m in MARKS + [""]:
-                menu.add_command(label=MARK_LABELS[m], state=state,
-                                 command=lambda m=m: self.mark_entries(self.app.data.entries_for(pid, d), m))
+                menu.add_command(label=MARK_LABELS[m], command=lambda m=m: self.mark_cells([(pid, d)], m))
             menu.add_separator()
             menu.add_command(label=f"Entries && notes for {d:%a %m/%d}…",
                              command=lambda: self.open_cell_dialog(pid, idx))
@@ -356,18 +355,22 @@ class WeekTab(ttk.Frame):
         day_menu = tk.Menu(menu, tearoff=False)
         week_menu = tk.Menu(menu, tearoff=False)
         for m in MARKS + [""]:
-            day_menu.add_command(label=MARK_LABELS[m],
-                                 command=lambda m=m: self.mark_entries(self.app.data.entries_between(d, d), m))
-            week_menu.add_command(label=MARK_LABELS[m], command=lambda m=m: self.mark_entries(
-                self.app.data.entries_between(self.days[0], self.days[6]), m))
-        menu.add_cascade(label=f"Colour all of {d:%a %m/%d}", menu=day_menu)
-        menu.add_cascade(label="Colour the whole week", menu=week_menu)
+            day_menu.add_command(label=MARK_LABELS[m], command=lambda m=m: self.mark_cells(self._cells_with_hours(
+                d, d), m))
+            week_menu.add_command(label=MARK_LABELS[m], command=lambda m=m: self.mark_cells(self._cells_with_hours(
+                self.days[0], self.days[6]), m))
+        menu.add_cascade(label=f"Color all hours on {d:%a %m/%d}", menu=day_menu)
+        menu.add_cascade(label="Color all hours this week", menu=week_menu)
 
-    def mark_entries(self, entries, mark):
-        if not entries:
-            return
-        for e in entries:
-            e.mark = mark
+    def _cells_with_hours(self, a, b):
+        """(project, day) of every cell with hours between a and b, plus any cell already colored."""
+        cells = {(e.project_id, e.date) for e in self.app.data.entries_between(a, b)}
+        cells |= {k for k in self.app.data.marks if a <= k[1] <= b}
+        return sorted(cells)
+
+    def mark_cells(self, cells, mark):
+        for pid, d in cells:
+            self.app.data.set_mark(pid, d, mark)
         self.app.changed()
 
     # ---- inline editing
@@ -455,7 +458,7 @@ class WeekTab(ttk.Frame):
         pid, idx = self.edit_pos
         if not self.commit_edit():
             return "break"
-        self.mark_entries(self.app.data.entries_for(pid, self.days[idx]), mark)
+        self.mark_cells([(pid, self.days[idx])], mark)
         self.start_edit(pid, idx)
         return "break"
 
@@ -522,7 +525,7 @@ class LogTab(ttk.Frame):
         ttk.Button(quick, text="New entry…", command=self.add).pack(side="right")
 
         cols = ["date", "day", "company", "project", "category", "hours", "mark", "note"]
-        frame, self.tree = make_tree(self, cols, ["Date", "Day", "Company", "Project", "Category", "Hours", "Colour",
+        frame, self.tree = make_tree(self, cols, ["Date", "Day", "Company", "Project", "Category", "Hours", "Color",
                                                   "Note"],
                                      [90, 45, 110, 220, 100, 60, 70, 360],
                                      anchors={"hours": "e", "day": "center", "mark": "center"})
@@ -534,9 +537,9 @@ class LogTab(ttk.Frame):
         self.tree.bind("<Delete>", lambda e: self.delete())
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", pady=(4, 0))
-        ttk.Label(bottom, text="Colour selected entries (Ctrl/Shift+click to pick several):").pack(side="left")
+        ttk.Label(bottom, text="Color selected entries (Ctrl/Shift+click to pick several):").pack(side="left")
         for m in MARKS + [""]:
-            ttk.Button(bottom, text=m.capitalize() if m else "Clear colour",
+            ttk.Button(bottom, text=m.capitalize() if m else "Clear color",
                        command=lambda m=m: self.mark(m)).pack(side="left", padx=(4, 0))
         self.footer = ttk.Label(bottom, font=("TkDefaultFont", 10, "bold"))
         self.footer.pack(side="right")
@@ -603,9 +606,10 @@ class LogTab(ttk.Frame):
         total = 0.0
         for e, company, pname in rows:
             total += e.hours
-            self.tree.insert("", "end", iid=str(e.id), tags=(e.mark,) if e.mark else (), values=[
+            mark = data.entry_mark(e)
+            self.tree.insert("", "end", iid=str(e.id), tags=(mark,) if mark else (), values=[
                 e.date.isoformat(), e.date.strftime("%a"), company, pname, e.category, fmt_hours(e.hours),
-                e.mark, e.note.replace("\n", " ")])
+                mark, e.note.replace("\n", " ")])
         days = len({r[0].date for r in rows})
         self.footer.config(text=f"{len(rows)} entries   •   {days} days   •   {fmt_hours(total)} hours")
 
@@ -616,12 +620,12 @@ class LogTab(ttk.Frame):
     def mark(self, mark):
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Colour", "Select one or more entries first (Ctrl/Shift+click).", parent=self)
+            messagebox.showinfo("Color", "Select one or more entries first (Ctrl/Shift+click).", parent=self)
             return
         for iid in sel:
             e = self.app.data.entries.get(int(iid))
             if e:
-                e.mark = mark
+                self.app.data.set_mark(e.project_id, e.date, mark)
         self.app.changed()
         for iid in sel:
             if self.tree.exists(iid):
@@ -766,8 +770,10 @@ class StatsTab(ttk.Frame):
         self.year = ttk.Combobox(bar, state="readonly", width=8)
         self.year.pack(side="left", padx=4)
         self.year.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-        ttk.Button(bar, text="Open statistics file", command=lambda: open_path(
-            storage.stats_path_for(self.app.data_path))).pack(side="right")
+        ttk.Button(bar, text="Open statistics (text)", command=lambda: open_path(
+            storage.stats_text_path_for(self.app.data_path))).pack(side="right")
+        ttk.Button(bar, text="Open statistics (XML)", command=lambda: open_path(
+            storage.stats_path_for(self.app.data_path))).pack(side="right", padx=4)
         ttk.Button(bar, text="Open data folder", command=lambda: open_path(self.app.data_path.parent)).pack(
             side="right", padx=4)
 
@@ -928,7 +934,8 @@ class App(tk.Tk):
 
     def _set_status(self, what: str):
         self.status.config(text=f"{what} {dt.datetime.now():%H:%M:%S}   •   Data: {self.data_path}   •   "
-                                f"Statistics: {storage.stats_path_for(self.data_path).name}")
+                                f"Statistics: {storage.stats_text_path_for(self.data_path).name}, "
+                                f"{storage.stats_path_for(self.data_path).name}")
 
     def save(self):
         try:

@@ -54,7 +54,7 @@ class Stats:
     companies: Dict[str, Bucket]
     projects: Dict[int, Bucket]
     weekdays: Dict[int, Bucket]  # 0 = Monday
-    marks: Dict[str, Bucket]  # "" = not coloured
+    marks: Dict[str, Bucket]  # cell color of the hours, "" = no color
     summary: Dict[str, float]
 
 
@@ -84,7 +84,7 @@ def compute(data: TimeData, year: Optional[int] = None, today: Optional[dt.date]
         companies[p.company if p else "?"].add(e)
         projects[e.project_id].add(e)
         weekdays[e.date.weekday()].add(e)
-        marks[e.mark].add(e)
+        marks[data.entry_mark(e)].add(e)
 
     def hours_between(a: dt.date, b: dt.date) -> float:
         return sum(e.hours for e in data.entries.values() if a <= e.date <= b)
@@ -192,10 +192,10 @@ def stats_xml(data: TimeData, today: Optional[dt.date] = None) -> ET.Element:
                           hours=_h(sum(e.hours for e in data.entries.values()
                                        if e.project_id == p.id and e.date.year == y)))
 
-    marks_el = ET.SubElement(root, "byMark")
+    marks_el = ET.SubElement(root, "byColor")
     for m in MARKS + [""]:
         b = s.marks.get(m, Bucket())
-        ET.SubElement(marks_el, "mark", value=m or "none", hours=_h(b.hours), entries=str(b.entries))
+        ET.SubElement(marks_el, "color", value=m or "none", hours=_h(b.hours), entries=str(b.entries))
 
     wd_el = ET.SubElement(root, "weekdays")
     for i in WEEKDAY_ORDER:

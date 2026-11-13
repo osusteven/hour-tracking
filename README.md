@@ -7,10 +7,11 @@ where you type hours such as `8` or `8+2 drive`.
 * **Week** – the familiar grid, Sunday to Saturday. Projects are grouped by
   company with daily, company and weekly totals. Click a day and type the
   hours. A day's total turns green at 8 hours or more.
-* **Colours** – mark hours green, yellow or red, e.g. green once you have
-  submitted them. Right-click a cell to colour it, or colour a whole day or
-  week at once. While typing in a cell: Ctrl+1 green, Ctrl+2 yellow,
-  Ctrl+3 red, Ctrl+0 clear. In the Log tab you can colour several selected
+* **Colors** – color any cell (one project on one day) green, yellow or red
+  at any time, e.g. green once you have submitted the hours. Empty cells can
+  be colored too. Right-click a cell to color it, or color all hours of a day
+  or week at once. While typing in a cell: Ctrl+1 green, Ctrl+2 yellow,
+  Ctrl+3 red, Ctrl+0 clear. In the Log tab you can color several selected
   entries at once.
 * **Log** – every entry as a list (date, project, category, hours, note) with
   date range, project and text filters. Use it to add entries with longer notes.
@@ -29,7 +30,8 @@ can open in a text editor, a browser or Excel (*Data > Get Data > From XML*):
 | File | Contents |
 |---|---|
 | `hours.xml` | the data: categories, projects, time entries |
-| `hours-statistics.xml` | statistics, regenerated after every save |
+| `hours-statistics.txt` | statistics report to read in Notepad: summary, this week, hours not yet green, by month / week / project / company / weekday, budgets |
+| `hours-statistics.xml` | the same statistics as XML, regenerated after every save |
 | `hours.xml.bak` | copy of the data file from before the first save of each session |
 
 The default location is `D:\OneDrive - Motor Systems\Document_s\`. If that
@@ -52,9 +54,11 @@ Example of `hours.xml`:
   </projects>
   <entries>
     <entry id="17" date="2026-05-04" project="3" hours="8" category="Work" />
-    <entry id="18" date="2026-05-04" project="3" hours="2" category="Drive" note="Drove to site"
-           mark="green" />
+    <entry id="18" date="2026-05-04" project="3" hours="2" category="Drive" note="Drove to site" />
   </entries>
+  <cellColors>
+    <cell project="3" date="2026-05-04" color="green" />
+  </cellColors>
 </hourTracker>
 ```
 

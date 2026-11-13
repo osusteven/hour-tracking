@@ -7,9 +7,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 STATUSES = ["Not Started", "Active", "Waiting", "On Hold", "Done"]
 
-# Colour marks for entries, e.g. green = hours submitted.  "" = no mark.
+# Colors a grid cell (one project on one day) can have, e.g. green = hours
+# submitted.  "" = no color.  A cell can be colored even when it has no hours.
 MARKS = ["green", "yellow", "red"]
-MARK_LABELS = {"green": "Green (submitted)", "yellow": "Yellow", "red": "Red", "": "No colour"}
+MARK_LABELS = {"green": "Green (submitted)", "yellow": "Yellow", "red": "Red", "": "No color"}
 
 # Extra free-text project fields (attribute name, label) - mirrors the
 # columns of the original spreadsheet.
@@ -80,7 +81,6 @@ class Entry:
     category: str = "Work"
     note: str = ""
     source: str = ""  # e.g. "excel:2026!M14" for imported entries
-    mark: str = ""  # "", "green", "yellow" or "red"
 
 
 @dataclass
@@ -88,6 +88,8 @@ class TimeData:
     projects: Dict[int, Project] = field(default_factory=dict)
     entries: Dict[int, Entry] = field(default_factory=dict)
     categories: List[Category] = field(default_factory=lambda: [Category(c.name, c.code) for c in DEFAULT_CATEGORIES])
+    # cell colors: (project id, date) -> "green" / "yellow" / "red"
+    marks: Dict[Tuple[int, dt.date], str] = field(default_factory=dict)
     next_project_id: int = 1
     next_entry_id: int = 1
 
@@ -131,6 +133,8 @@ class TimeData:
         for eid in [e.id for e in self.entries.values() if e.project_id == project_id]:
             del self.entries[eid]
         self.projects.pop(project_id, None)
+        for key in [k for k in self.marks if k[0] == project_id]:
+            del self.marks[key]
 
     def companies(self) -> List[str]:
         return sorted({p.company for p in self.projects.values() if p.company}, key=str.lower)
@@ -148,12 +152,25 @@ class TimeData:
 
     # ------------------------------------------------------------------ entries
     def add_entry(self, date: dt.date, project_id: int, hours: float, category: Optional[str] = None,
-                  note: str = "", source: str = "", mark: str = "") -> Entry:
+                  note: str = "", source: str = "") -> Entry:
         e = Entry(id=self.next_entry_id, date=date, project_id=project_id, hours=float(hours),
-                  category=category or self.default_category, note=note, source=source, mark=mark)
+                  category=category or self.default_category, note=note, source=source)
         self.entries[e.id] = e
         self.next_entry_id += 1
         return e
+
+    # ------------------------------------------------------------------ cell colors
+    def get_mark(self, project_id: int, date: dt.date) -> str:
+        return self.marks.get((project_id, date), "")
+
+    def set_mark(self, project_id: int, date: dt.date, mark: str) -> None:
+        if mark:
+            self.marks[(project_id, date)] = mark
+        else:
+            self.marks.pop((project_id, date), None)
+
+    def entry_mark(self, e: "Entry") -> str:
+        return self.marks.get((e.project_id, e.date), "")
 
     def delete_entry(self, entry_id: int) -> None:
         self.entries.pop(entry_id, None)
@@ -179,7 +196,6 @@ class TimeData:
         for cat, hours in amounts:
             totals[cat] = totals.get(cat, 0.0) + hours
         existing = self.entries_for(project_id, date)
-        cell_mark = combined_mark(existing)
         by_cat: Dict[str, List[Entry]] = {}
         for e in existing:
             by_cat.setdefault(e.category, []).append(e)
@@ -193,7 +209,7 @@ class TimeData:
                 for o in olds[1:]:
                     self.delete_entry(o.id)
             else:
-                keep = self.add_entry(date, project_id, hours, cat, mark=cell_mark)
+                keep = self.add_entry(date, project_id, hours, cat)
             if extra_note:
                 keep.note = f"{keep.note}; {extra_note}" if keep.note else extra_note
                 extra_note = ""
@@ -210,17 +226,6 @@ def week_start(d: dt.date) -> dt.date:
 # weekday() numbers (0 = Monday) in display order, starting on Sunday
 WEEKDAY_ORDER = [6, 0, 1, 2, 3, 4, 5]
 
-
-def combined_mark(entries) -> str:
-    """The colour of a cell holding several entries: red or yellow if any entry
-    has it, green only if every entry is green, otherwise no colour."""
-    marks = {e.mark for e in entries}
-    if not marks:
-        return ""
-    for m in ("red", "yellow"):
-        if m in marks:
-            return m
-    return "green" if marks == {"green"} else ""
 
 
 def fmt_hours(h: float) -> str:

@@ -124,3 +124,46 @@ class StorageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ColorAndReportTests(unittest.TestCase):
+    def test_cell_colors_roundtrip(self):
+        data = TimeData()
+        p = data.add_project("IAS", "X")
+        data.add_entry(D(2026, 11, 9), p.id, 8)
+        data.set_mark(p.id, D(2026, 11, 9), "green")
+        data.set_mark(p.id, D(2026, 11, 10), "red")  # empty cell can be colored
+        data.set_mark(p.id, D(2026, 11, 11), "yellow")
+        data.set_mark(p.id, D(2026, 11, 11), "")  # cleared
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hours.xml"
+            storage.save(data, path)
+            loaded = storage.load(path)
+            self.assertEqual(loaded.marks, {(p.id, D(2026, 11, 9)): "green", (p.id, D(2026, 11, 10)): "red"})
+            self.assertTrue(storage.stats_text_path_for(path).exists())
+        data.delete_project(p.id)
+        self.assertEqual(data.marks, {})
+
+    def test_old_entry_mark_attribute_is_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "hours.xml"
+            path.write_text('<hourTracker version="1"><projects><project id="1" company="A" name="B"/></projects>'
+                            '<entries><entry id="1" date="2026-11-02" project="1" hours="3" mark="green"/>'
+                            '</entries></hourTracker>', encoding="utf-8")
+            self.assertEqual(storage.load(path).marks, {(1, D(2026, 11, 2)): "green"})
+
+    def test_text_report(self):
+        from hourtracker.report import stats_text
+        data = TimeData()
+        p = data.add_project("IAS", "Sierra", budget=20)
+        data.add_entry(D(2026, 11, 9), p.id, 8)
+        data.add_entry(D(2026, 11, 10), p.id, 5)
+        data.add_entry(D(2026, 11, 10), p.id, 1, "Drive")
+        data.set_mark(p.id, D(2026, 11, 9), "green")
+        text = stats_text(data, today=D(2026, 11, 13))
+        self.assertIn("This week (11/08 - 11/14)", text)
+        self.assertIn("8.0*", text)  # full day flagged
+        self.assertIn("11/08 - 11/14/2026", text)  # week with hours that are not green
+        self.assertIn("IAS - Sierra", text)
+        lines = [ln for ln in text.splitlines() if ln.strip().startswith("This year")]
+        self.assertEqual(lines[0].split()[3:5], ["14.0", "2"])
